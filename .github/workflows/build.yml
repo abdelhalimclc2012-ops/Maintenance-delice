@@ -1,4 +1,4 @@
-name: Build APK
+ name: Build APK
 
 on:
   push:
@@ -12,15 +12,39 @@ jobs:
       - name: Récupérer le code
         uses: actions/checkout@v4
 
-      - name: Compiler l'APK avec Buildozer
-        id: buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
-          command: buildozer android debug
-          buildozer_version: stable
+          python-version: '3.11'
+
+      - name: Installer les dépendances système
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk python3-pip autoconf libtool \
+            pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev \
+            cmake libffi-dev libssl-dev build-essential ccache \
+            libltdl-dev
+
+      - name: Installer Buildozer et Cython
+        run: |
+          pip install --upgrade pip
+          pip install buildozer==1.5.0 cython==0.29.33
+
+      - name: Cache Buildozer global
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+
+      - name: Compiler l'APK
+        run: |
+          yes | buildozer android debug
 
       - name: Publier l'APK comme artifact
         uses: actions/upload-artifact@v4
         with:
           name: maintenance-delice-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
