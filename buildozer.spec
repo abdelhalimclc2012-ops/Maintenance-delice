@@ -1,4 +1,4 @@
-[app]
+M[app]
 title = Gestion Maintenance Delice
 package.name = maintenancedelice
 package.domain = org.delice
@@ -9,7 +9,7 @@ source.include_exts = py,png,jpg,jpeg,ttf,db
 
 version = 2.0
 
-requirements = python3,kivy==2.3.0,fpdf2,plyer
+requirements = python3,cython==0.29.33,kivy==2.3.0,fpdf2,plyer
 
 orientation = portrait
 fullscreen = 0
