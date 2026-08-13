@@ -15,8 +15,8 @@ jobs:
       - name: Compiler l'APK avec l'image Docker officielle Kivy
         run: |
           docker run --rm \
-            -v ${{ github.workspace }}:/home/user/hostcwd \
-            kivyorg/buildozer \
+            --volume "${{ github.workspace }}":/home/user/hostcwd \
+            kivy/buildozer \
             android debug
 
       - name: Publier l'APK comme artifact
