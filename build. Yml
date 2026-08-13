@@ -1,0 +1,26 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Compiler l'APK avec Buildozer
+        id: buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        with:
+          command: buildozer android debug
+          buildozer_version: stable
+
+      - name: Publier l'APK comme artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-delice-apk
+          path: ${{ steps.buildozer.outputs.filename }}
