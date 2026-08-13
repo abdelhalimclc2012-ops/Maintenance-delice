@@ -1,4 +1,4 @@
-M[app]
+[app]
 title = Gestion Maintenance Delice
 package.name = maintenancedelice
 package.domain = org.delice
