@@ -17,10 +17,10 @@ jobs:
           set +e
           for i in 1 2 3; do
             echo "=== Tentative $i/3 ==="
-            docker run --rm -i \
+            yes | docker run --rm -i \
               --volume "${{ github.workspace }}":/home/user/hostcwd \
               kivy/buildozer \
-              /bin/sh -c "yes | buildozer android debug"
+              android debug
             code=$?
             if [ $code -eq 0 ]; then
               echo "Build réussi à la tentative $i"
@@ -37,3 +37,4 @@ jobs:
         with:
           name: maintenance-delice-apk
           path: bin/*.apk
+EOF
