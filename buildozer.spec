@@ -9,7 +9,9 @@ source.include_exts = py,png,jpg,jpeg,ttf,db
 
 version = 2.0
 
-requirements = python3,cython==0.29.36,kivy==2.3.0,fpdf2,plyer
+requirements = python3,kivy==2.3.1,fpdf2,plyer
+
+p4a.branch = develop
 
 orientation = portrait
 fullscreen = 0
