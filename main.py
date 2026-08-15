@@ -15,6 +15,8 @@ import os
 import csv
 import shutil
 import webbrowser
+import threading
+import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
@@ -80,6 +82,14 @@ NOM_REALISATEUR = "Hichri Abdelhalim"
 
 
 def obtenir_dossier_export():
+    """
+    Cherche un dossier accessible en écriture pour les exports PDF/CSV,
+    en testant une VRAIE écriture (pas seulement os.access, qui peut
+    répondre "écrivable" à tort sur les dossiers publics comme Documents/
+    Download depuis Android 10+, où une appli sans l'autorisation spéciale
+    "Accès à tous les fichiers" ne peut en réalité pas y écrire — l'erreur
+    ne survient alors qu'au moment de l'écriture réelle du fichier).
+    """
     dossiers_candidats = [
         "/storage/emulated/0/GestionMaintenanceDelice",
         "/storage/emulated/0/Documents",
@@ -87,12 +97,37 @@ def obtenir_dossier_export():
     ]
     for dossier in dossiers_candidats:
         try:
-            if not os.path.isdir(dossier):
-                os.makedirs(dossier, exist_ok=True)
-            if os.access(dossier, os.W_OK):
-                return dossier
+            os.makedirs(dossier, exist_ok=True)
+            chemin_test = os.path.join(dossier, ".test_ecriture_delice")
+            with open(chemin_test, "w") as f:
+                f.write("test")
+            os.remove(chemin_test)
+            return dossier
         except Exception:
             continue
+
+    # Aucun dossier public n'est réellement accessible en écriture (permission
+    # "Accès à tous les fichiers" non accordée) : on se replie sur le dossier
+    # propre à l'application, toujours accessible sans aucune permission,
+    # sur toutes les versions d'Android.
+    try:
+        from android.storage import app_storage_path
+        dossier = os.path.join(app_storage_path(), "GestionMaintenanceDelice")
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+    except Exception:
+        pass
+
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app is not None:
+            dossier = os.path.join(app.user_data_dir, "GestionMaintenanceDelice")
+            os.makedirs(dossier, exist_ok=True)
+            return dossier
+    except Exception:
+        pass
+
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -666,24 +701,24 @@ def entete(titre):
     return barre
 
 
-def afficher_popup_erreur_generique(titre, exception):
+def afficher_popup_erreur_generique(titre, message_erreur):
     """
     Affiche une erreur inattendue dans un popup lisible (au lieu de laisser
     l'application planter intégralement), et sauvegarde la trace complète
     dans un fichier texte lisible depuis un gestionnaire de fichiers Android.
+    `message_erreur` doit déjà être une chaîne complète (trace incluse) :
+    ne pas dépendre de traceback.format_exc() en dehors du bloc except
+    d'origine, car le contexte de l'exception serait alors perdu.
     """
-    import traceback
-    trace_complete = traceback.format_exc()
-    message = f"{type(exception).__name__}: {exception}\n\n{trace_complete}"
-
     chemin_log = None
     try:
         chemin_log = os.path.join(obtenir_dossier_export(), "erreur_pdf.txt")
         with open(chemin_log, "w", encoding="utf-8") as f:
-            f.write(message)
+            f.write(message_erreur)
     except Exception:
         chemin_log = None
 
+    message = message_erreur
     if chemin_log:
         message += f"\n\nCe message a aussi été enregistré dans :\n{chemin_log}"
 
@@ -700,6 +735,61 @@ def afficher_popup_erreur_generique(titre, exception):
     contenu.add_widget(bouton("Fermer", lambda inst: popup.dismiss(),
                                couleur_fond=(0.85, 0.88, 0.9, 1), couleur_texte=GRIS_TEXTE))
     popup.open()
+
+
+def lancer_generation_pdf_en_arriere_plan(titre, sous_titre, colonnes, obtenir_lignes, nom_fichier):
+    """
+    Génère le PDF (récupération des données + écriture du fichier) dans un
+    thread séparé, avec un popup de progression pendant ce temps.
+
+    C'est essentiel sur Android : si la génération s'exécute directement sur
+    le thread principal (celui de l'interface) et prend plus de quelques
+    secondes (gros historique, téléphone lent), le système considère l'appli
+    comme bloquée ("ANR") et la ferme brutalement — un crash qu'aucun
+    try/except ne peut intercepter, car ce n'est pas une erreur Python mais
+    une décision du système d'exploitation. En déplaçant le travail dans un
+    thread, l'interface reste réactive et ce risque disparaît, quel que soit
+    le nombre de lignes à exporter.
+
+    `obtenir_lignes` est une fonction sans argument qui retourne la liste de
+    lignes à exporter (appelée dans le thread, pas sur l'écran).
+    """
+    popup_attente = Popup(title="Génération du PDF…",
+                           content=Label(text="Veuillez patienter,\ngénération du PDF en cours..."),
+                           size_hint=(0.8, 0.32), auto_dismiss=False)
+    popup_attente.open()
+
+    resultat = {}
+
+    def travail_arriere_plan():
+        try:
+            lignes = obtenir_lignes()
+            chemin = exporter_pdf(titre, sous_titre, colonnes, lignes, nom_fichier)
+            resultat["chemin"] = chemin
+        except Exception as e:
+            resultat["erreur"] = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
+
+    def terminer(dt):
+        popup_attente.dismiss()
+        if "erreur" in resultat:
+            afficher_popup_erreur_generique("Erreur génération PDF", resultat["erreur"])
+            return
+        chemin = resultat.get("chemin")
+        if not chemin:
+            afficher_popup_erreur_generique("Erreur génération PDF", "Le fichier PDF n'a pas pu être créé (raison inconnue).")
+            return
+        try:
+            webbrowser.open("file://" + chemin)
+        except Exception:
+            pass
+        popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
+        popup.open()
+
+    def travail_et_notifier():
+        travail_arriere_plan()
+        Clock.schedule_once(terminer, 0)
+
+    threading.Thread(target=travail_et_notifier, daemon=True).start()
 
 
 def afficher_popup_erreur_fpdf():
@@ -1513,10 +1603,13 @@ class EcranHistorique(Screen):
         return [_formater_ligne_export(ligne[1:]) for ligne in lignes]
 
     def exporter_excel(self, *args):
-        lignes_completes = self._lignes_completes_filtrees()
-        chemin = exporter_csv("Historique Maintenance", self.COLONNES, lignes_completes, "historique_maintenance.csv")
-        popup = Popup(title="Export CSV réussi", content=Label(text=f"Fichier créé :\n{chemin}"), size_hint=(0.88, 0.4))
-        popup.open()
+        try:
+            lignes_completes = self._lignes_completes_filtrees()
+            chemin = exporter_csv("Historique Maintenance", self.COLONNES, lignes_completes, "historique_maintenance.csv")
+            popup = Popup(title="Export CSV réussi", content=Label(text=f"Fichier créé :\n{chemin}"), size_hint=(0.88, 0.4))
+            popup.open()
+        except Exception as e:
+            afficher_popup_erreur_generique("Erreur export CSV", f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
     def imprimer(self, *args):
         sous_titre = f"Historique - Généré le {datetime.now().strftime('%d/%m/%Y %H:%M')}"
@@ -1524,17 +1617,10 @@ class EcranHistorique(Screen):
             afficher_popup_erreur_fpdf()
             return
 
-        try:
-            lignes_completes = self._lignes_completes_filtrees()
-            chemin = exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes_completes, "historique_intervention.pdf")
-            try:
-                webbrowser.open("file://" + chemin)
-            except Exception:
-                pass
-            popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
-            popup.open()
-        except Exception as e:
-            afficher_popup_erreur_generique("Erreur génération PDF (Historique)", e)
+        lancer_generation_pdf_en_arriere_plan(
+            "Historique Intervention - Delice", sous_titre, self.COLONNES,
+            self._lignes_completes_filtrees, "historique_intervention.pdf"
+        )
 
     def retour(self, *args):
         self.manager.transition = SlideTransition(direction="right")
@@ -1717,9 +1803,12 @@ class EcranRapport(Screen):
         ouvrir_popup_confirmation_suppression(intervention_id, on_succes=self.generer)
 
     def exporter_excel(self, *args):
-        chemin = exporter_csv("Rapport Maintenance", self.COLONNES, getattr(self, "dernieres_lignes", []), "rapport_maintenance.csv")
-        popup = Popup(title="Export CSV réussi", content=Label(text=f"Fichier créé :\n{chemin}"), size_hint=(0.88, 0.4))
-        popup.open()
+        try:
+            chemin = exporter_csv("Rapport Maintenance", self.COLONNES, getattr(self, "dernieres_lignes", []), "rapport_maintenance.csv")
+            popup = Popup(title="Export CSV réussi", content=Label(text=f"Fichier créé :\n{chemin}"), size_hint=(0.88, 0.4))
+            popup.open()
+        except Exception as e:
+            afficher_popup_erreur_generique("Erreur export CSV", f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
     def imprimer(self, *args):
         sous_titre = f"Rapport - {self.lbl_kpi.text}"
@@ -1727,16 +1816,11 @@ class EcranRapport(Screen):
             afficher_popup_erreur_fpdf()
             return
 
-        try:
-            chemin = exporter_pdf("Rapport Intervention - Delice", sous_titre, self.COLONNES, getattr(self, "dernieres_lignes", []), "rapport_intervention.pdf")
-            try:
-                webbrowser.open("file://" + chemin)
-            except Exception:
-                pass
-            popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
-            popup.open()
-        except Exception as e:
-            afficher_popup_erreur_generique("Erreur génération PDF (Rapport)", e)
+        donnees = getattr(self, "dernieres_lignes", [])
+        lancer_generation_pdf_en_arriere_plan(
+            "Rapport Intervention - Delice", sous_titre, self.COLONNES,
+            lambda: donnees, "rapport_intervention.pdf"
+        )
 
     def retour(self, *args):
         self.manager.transition = SlideTransition(direction="right")
