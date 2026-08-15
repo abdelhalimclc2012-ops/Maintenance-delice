@@ -9,7 +9,7 @@ source.include_exts = py,png,jpg,jpeg,ttf,db
 
 version = 2.0
 
-requirements = python3,kivy==2.3.1,fpdf2,plyer,Pillow,fonttools,defusedxml
+requirements = python3,kivy==2.3.1,fpdf2,plyer,Pillow,fonttools==4.39.1,defusedxml
 
 p4a.branch = develop
 
