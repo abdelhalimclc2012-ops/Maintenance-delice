@@ -22,9 +22,10 @@ try:
     from fpdf import FPDF
     FPDF_DISPONIBLE = True
     ERREUR_IMPORT_FPDF = None
-except ImportError as e:
+except Exception as e:
+    import traceback
     FPDF_DISPONIBLE = False
-    ERREUR_IMPORT_FPDF = str(e)
+    ERREUR_IMPORT_FPDF = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
 
 try:
     from plyer import vibrator
@@ -663,6 +664,81 @@ def entete(titre):
     barre.add_widget(lbl_marque)
     barre.add_widget(lbl_titre)
     return barre
+
+
+def afficher_popup_erreur_generique(titre, exception):
+    """
+    Affiche une erreur inattendue dans un popup lisible (au lieu de laisser
+    l'application planter intégralement), et sauvegarde la trace complète
+    dans un fichier texte lisible depuis un gestionnaire de fichiers Android.
+    """
+    import traceback
+    trace_complete = traceback.format_exc()
+    message = f"{type(exception).__name__}: {exception}\n\n{trace_complete}"
+
+    chemin_log = None
+    try:
+        chemin_log = os.path.join(obtenir_dossier_export(), "erreur_pdf.txt")
+        with open(chemin_log, "w", encoding="utf-8") as f:
+            f.write(message)
+    except Exception:
+        chemin_log = None
+
+    if chemin_log:
+        message += f"\n\nCe message a aussi été enregistré dans :\n{chemin_log}"
+
+    contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+    scroll = ScrollView(size_hint=(1, 1))
+    lbl = Label(text=message, color=GRIS_TEXTE, font_size=dp(11.5),
+                size_hint=(1, None), halign="left", valign="top")
+    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    lbl.bind(texture_size=lambda inst, ts: setattr(inst, "height", ts[1] + dp(10)))
+    scroll.add_widget(lbl)
+    contenu.add_widget(scroll)
+
+    popup = Popup(title=titre, content=contenu, size_hint=(0.94, 0.8))
+    contenu.add_widget(bouton("Fermer", lambda inst: popup.dismiss(),
+                               couleur_fond=(0.85, 0.88, 0.9, 1), couleur_texte=GRIS_TEXTE))
+    popup.open()
+
+
+def afficher_popup_erreur_fpdf():
+    """
+    Affiche le détail complet de l'échec d'import de fpdf2/fontTools dans un
+    popup qui s'enroule correctement (au lieu de couper le texte à droite),
+    et sauvegarde aussi le message complet dans un fichier texte lisible
+    depuis un gestionnaire de fichiers Android, pour diagnostic hors-écran.
+    """
+    message = "Impossible de générer le PDF (fpdf2/fontTools indisponible).\n"
+    if ERREUR_IMPORT_FPDF:
+        message += f"\nDétail technique :\n{ERREUR_IMPORT_FPDF}"
+    else:
+        message += "\n(Aucun détail disponible.)"
+
+    chemin_log = None
+    try:
+        chemin_log = os.path.join(obtenir_dossier_export(), "erreur_pdf.txt")
+        with open(chemin_log, "w", encoding="utf-8") as f:
+            f.write(message)
+    except Exception:
+        chemin_log = None
+
+    if chemin_log:
+        message += f"\n\nCe message a aussi été enregistré dans :\n{chemin_log}"
+
+    contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+    scroll = ScrollView(size_hint=(1, 1))
+    lbl = Label(text=message, color=GRIS_TEXTE, font_size=dp(12.5),
+                size_hint=(1, None), halign="left", valign="top")
+    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    lbl.bind(texture_size=lambda inst, ts: setattr(inst, "height", ts[1] + dp(10)))
+    scroll.add_widget(lbl)
+    contenu.add_widget(scroll)
+
+    popup = Popup(title="Erreur PDF (fpdf2)", content=contenu, size_hint=(0.92, 0.75))
+    contenu.add_widget(bouton("Fermer", lambda inst: popup.dismiss(),
+                               couleur_fond=(0.85, 0.88, 0.9, 1), couleur_texte=GRIS_TEXTE))
+    popup.open()
 
 
 def afficher_toast(message, couleur_fond=VERT_RESOLU, duree=1.8):
@@ -1445,21 +1521,20 @@ class EcranHistorique(Screen):
     def imprimer(self, *args):
         sous_titre = f"Historique - Généré le {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         if not FPDF_DISPONIBLE:
-            message = "Installez 'fpdf2' via Pip dans Pydroid 3."
-            if ERREUR_IMPORT_FPDF:
-                message += f"\n\nDétail : {ERREUR_IMPORT_FPDF}"
-            popup = Popup(title="fpdf2 manquant", content=Label(text=message), size_hint=(0.85, 0.45))
-            popup.open()
+            afficher_popup_erreur_fpdf()
             return
 
-        lignes_completes = self._lignes_completes_filtrees()
-        chemin = exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes_completes, "historique_intervention.pdf")
         try:
-            webbrowser.open("file://" + chemin)
-        except Exception:
-            pass
-        popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
-        popup.open()
+            lignes_completes = self._lignes_completes_filtrees()
+            chemin = exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes_completes, "historique_intervention.pdf")
+            try:
+                webbrowser.open("file://" + chemin)
+            except Exception:
+                pass
+            popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
+            popup.open()
+        except Exception as e:
+            afficher_popup_erreur_generique("Erreur génération PDF (Historique)", e)
 
     def retour(self, *args):
         self.manager.transition = SlideTransition(direction="right")
@@ -1649,20 +1724,19 @@ class EcranRapport(Screen):
     def imprimer(self, *args):
         sous_titre = f"Rapport - {self.lbl_kpi.text}"
         if not FPDF_DISPONIBLE:
-            message = "Installez 'fpdf2' via Pip dans Pydroid 3."
-            if ERREUR_IMPORT_FPDF:
-                message += f"\n\nDétail : {ERREUR_IMPORT_FPDF}"
-            popup = Popup(title="fpdf2 manquant", content=Label(text=message), size_hint=(0.85, 0.45))
-            popup.open()
+            afficher_popup_erreur_fpdf()
             return
 
-        chemin = exporter_pdf("Rapport Intervention - Delice", sous_titre, self.COLONNES, getattr(self, "dernieres_lignes", []), "rapport_intervention.pdf")
         try:
-            webbrowser.open("file://" + chemin)
-        except Exception:
-            pass
-        popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
-        popup.open()
+            chemin = exporter_pdf("Rapport Intervention - Delice", sous_titre, self.COLONNES, getattr(self, "dernieres_lignes", []), "rapport_intervention.pdf")
+            try:
+                webbrowser.open("file://" + chemin)
+            except Exception:
+                pass
+            popup = Popup(title="PDF Généré", content=Label(text=f"Fichier PDF créé :\n{chemin}"), size_hint=(0.88, 0.4))
+            popup.open()
+        except Exception as e:
+            afficher_popup_erreur_generique("Erreur génération PDF (Rapport)", e)
 
     def retour(self, *args):
         self.manager.transition = SlideTransition(direction="right")
