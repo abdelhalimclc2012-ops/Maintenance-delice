@@ -9,7 +9,7 @@ version = 2.0
 requirements = python3,kivy==2.3.1,fpdf2,fonttools,plyer,Pillow,android
 orientation = portrait
 fullscreen = 0
-icon.filename = %(source.dir)s/icon-delice-casque.png
+icon.filename = %(source.dir)s/icon_delice_casque.png
 android.permissions = VIBRATE
 android.api = 33
 android.minapi = 21
