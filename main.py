@@ -16,6 +16,7 @@ import sqlite3
 import os
 import csv
 import shutil
+import traceback
 import importlib.metadata
 from datetime import datetime, timedelta
 from collections import Counter
@@ -23,8 +24,14 @@ from collections import Counter
 try:
     from fpdf import FPDF
     FPDF_DISPONIBLE = True
-except ImportError:
+    ERREUR_IMPORT_FPDF = None
+except Exception as e:
+    # On capture le VRAI message d'erreur (pas seulement ImportError) :
+    # un probleme dans une sous-dependance de fpdf2 (fonttools, Pillow...)
+    # peut lever autre chose qu'un simple ImportError, et etait avale
+    # silencieusement avant, masquant la cause reelle.
     FPDF_DISPONIBLE = False
+    ERREUR_IMPORT_FPDF = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
 
 try:
     from plyer import vibrator
@@ -383,6 +390,25 @@ def bouton(texte, callback, couleur_fond=BLEU_FONCE, couleur_texte=BLANC):
     b=Button(text=texte, size_hint=(1,None), height=dp(46), background_normal="", background_color=couleur_fond, color=couleur_texte, font_size=dp(14))
     b.bind(on_release=callback); return b
 
+def afficher_popup_erreur_fpdf():
+    """Affiche le vrai message d'erreur d'import de fpdf2, pour diagnostiquer
+    si le probleme vient de fpdf2 lui-meme ou d'une sous-dependance
+    (fonttools, Pillow, etc.) au lieu du message generique 'installez fpdf2'."""
+    message = "Impossible de generer le PDF : fpdf2 n'a pas pu etre importe.\n"
+    if ERREUR_IMPORT_FPDF:
+        message += f"\nDetail technique :\n{ERREUR_IMPORT_FPDF}"
+    else:
+        message += "\nAucun detail disponible."
+    contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+    scroll = ScrollView(size_hint=(1, 1))
+    lbl = Label(text=message, color=GRIS_TEXTE, font_size=dp(11.5), size_hint=(1, None), halign="left", valign="top")
+    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    lbl.bind(texture_size=lambda inst, ts: setattr(inst, "height", ts[1] + dp(10)))
+    scroll.add_widget(lbl); contenu.add_widget(scroll)
+    popup = Popup(title="Erreur PDF (fpdf2)", content=contenu, size_hint=(0.94, 0.82))
+    contenu.add_widget(bouton("Fermer", lambda inst: popup.dismiss(), couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
+    popup.open()
+
 def ligne_raccourcis_dates(callback):
     ligne=BoxLayout(size_hint=(1,None), height=dp(40), spacing=dp(6))
     for texte,cle in (("Aujourd'hui","aujourdhui"),("Hier","hier"),("Cette semaine","semaine"),("Ce mois","mois")):
@@ -727,7 +753,7 @@ class EcranHistorique(Screen):
         Popup(title="CSV OK", content=Label(text=f"Fichier:\n{chemin}"), size_hint=(0.88,0.4)).open()
     def imprimer(self,*a):
         sous_titre=f"Historique - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-        if not FPDF_DISPONIBLE: Popup(title="fpdf2 manquant", content=Label(text="Installez fpdf2 via Pip"), size_hint=(0.8,0.4)).open(); return
+        if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
         lignes=self._lignes_completes_filtrees(); chemin=exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes, "historique_intervention.pdf")
         Popup(title="PDF OK", content=Label(text=f"Fichier:\n{chemin}"), size_hint=(0.88,0.4)).open()
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
@@ -807,7 +833,7 @@ class EcranRapport(Screen):
     def exporter_excel(self,*a): chemin=exporter_csv("Rapport", self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_maintenance.csv"); Popup(title="CSV OK", content=Label(text=f"{chemin}"), size_hint=(0.88,0.4)).open()
     def imprimer(self,*a):
         sous=f"Rapport - {self.lbl_kpi.text}"
-        if not FPDF_DISPONIBLE: Popup(title="fpdf2 manquant", content=Label(text="Installez fpdf2"), size_hint=(0.8,0.4)).open(); return
+        if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
         chemin=exporter_pdf("Rapport - Delice", sous, self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_intervention.pdf")
         Popup(title="PDF OK", content=Label(text=f"{chemin}"), size_hint=(0.88,0.4)).open()
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
