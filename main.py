@@ -95,13 +95,23 @@ NOM_REALISATEUR = "Hichri Abdelhalim"
 
 def obtenir_dossier_export():
     """
-    Dossier privé de l'application (scoped storage) : aucune permission
-    requise, fonctionne sur toutes les versions d'Android, y compris
-    Android 10+ où l'écriture directe dans /storage/emulated/0/Documents
-    ou /Download provoque un PermissionError (Errno 13).
-    Le dossier reste accessible via un gestionnaire de fichiers sous :
-    Android/data/<package>/files/GestionMaintenanceDelice
+    Dossier externe propre a l'application (scoped storage) : aucune
+    permission requise, ET visible/accessible dans un gestionnaire de
+    fichiers classique (contrairement au stockage interne pur, invisible
+    sans root). Chemin resultant sur le telephone :
+    Stockage interne / Android / data / org.delice.maintenancedelice / files / GestionMaintenanceDelice
     """
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        contexte = PythonActivity.mActivity
+        chemin_externe = contexte.getExternalFilesDir(None).getAbsolutePath()
+        dossier = os.path.join(chemin_externe, "GestionMaintenanceDelice")
+        os.makedirs(dossier, exist_ok=True)
+        return dossier
+    except Exception:
+        pass
+
     try:
         from android.storage import app_storage_path
         dossier = os.path.join(app_storage_path(), "GestionMaintenanceDelice")
@@ -385,6 +395,29 @@ def afficher_toast(message, couleur_fond=VERT_RESOLU, duree=1.8):
     lbl.bind(size=lambda *a: setattr(lbl,"text_size",lbl.size)); contenu.add_widget(lbl)
     popup=Popup(title="", separator_height=0, content=contenu, size_hint=(0.82,None), height=dp(90))
     popup.open(); Clock.schedule_once(lambda dt: popup.dismiss(), duree); return popup
+
+def chemin_lisible(chemin):
+    """Transforme un chemin technique Android en repere lisible,
+    ex: 'Stockage interne > Android > data > ... > GestionMaintenanceDelice'."""
+    dossier = os.path.dirname(chemin)
+    dossier_affiche = dossier.replace("/storage/emulated/0", "Stockage interne")
+    parties = [p for p in dossier_affiche.split(os.sep) if p]
+    return " > ".join(parties) if parties else dossier_affiche
+
+def afficher_popup_export_reussi(type_fichier, chemin):
+    """Popup de confirmation apres export CSV/PDF, avec l'emplacement
+    du fichier presente de facon lisible plutot que le chemin brut."""
+    nom_fichier = os.path.basename(chemin)
+    emplacement = chemin_lisible(chemin)
+    message = f"{type_fichier} enregistre !\n\nFichier :\n{nom_fichier}\n\nEmplacement :\n{emplacement}"
+    contenu = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
+    lbl = Label(text=message, color=GRIS_TEXTE, font_size=dp(13.5), size_hint=(1, None), halign="center", valign="middle")
+    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    lbl.bind(texture_size=lambda inst, ts: setattr(inst, "height", ts[1]))
+    contenu.add_widget(lbl)
+    popup = Popup(title="", separator_height=0, content=contenu, size_hint=(0.9, None), height=dp(300))
+    contenu.add_widget(bouton("OK", lambda inst: popup.dismiss(), couleur_fond=VERT_RESOLU))
+    popup.open()
 
 def bouton(texte, callback, couleur_fond=BLEU_FONCE, couleur_texte=BLANC):
     b=Button(text=texte, size_hint=(1,None), height=dp(46), background_normal="", background_color=couleur_fond, color=couleur_texte, font_size=dp(14))
@@ -750,12 +783,12 @@ class EcranHistorique(Screen):
         lignes=get_interventions(**self._filtres_actuels); return [_formater_ligne_export(ligne[1:]) for ligne in lignes]
     def exporter_excel(self,*a):
         lignes=self._lignes_completes_filtrees(); chemin=exporter_csv("Historique Maintenance", self.COLONNES, lignes, "historique_maintenance.csv")
-        Popup(title="CSV OK", content=Label(text=f"Fichier:\n{chemin}"), size_hint=(0.88,0.4)).open()
+        afficher_popup_export_reussi("CSV", chemin)
     def imprimer(self,*a):
         sous_titre=f"Historique - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
         lignes=self._lignes_completes_filtrees(); chemin=exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes, "historique_intervention.pdf")
-        Popup(title="PDF OK", content=Label(text=f"Fichier:\n{chemin}"), size_hint=(0.88,0.4)).open()
+        afficher_popup_export_reussi("PDF", chemin)
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
 
 class EcranRapport(Screen):
@@ -830,12 +863,12 @@ class EcranRapport(Screen):
         self.dernieres_lignes=[_formater_ligne_export(l[1:]) for l in lignes]
     def modifier_intervention_ui(self,iid): ouvrir_popup_edition_intervention(iid, on_succes=self.generer)
     def supprimer_intervention_ui(self,iid): ouvrir_popup_confirmation_suppression(iid, on_succes=self.generer)
-    def exporter_excel(self,*a): chemin=exporter_csv("Rapport", self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_maintenance.csv"); Popup(title="CSV OK", content=Label(text=f"{chemin}"), size_hint=(0.88,0.4)).open()
+    def exporter_excel(self,*a): chemin=exporter_csv("Rapport", self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_maintenance.csv"); afficher_popup_export_reussi("CSV", chemin)
     def imprimer(self,*a):
         sous=f"Rapport - {self.lbl_kpi.text}"
         if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
         chemin=exporter_pdf("Rapport - Delice", sous, self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_intervention.pdf")
-        Popup(title="PDF OK", content=Label(text=f"{chemin}"), size_hint=(0.88,0.4)).open()
+        afficher_popup_export_reussi("PDF", chemin)
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
 
 class EcranFiche(Screen):
