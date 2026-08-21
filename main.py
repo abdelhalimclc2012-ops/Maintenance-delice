@@ -16,6 +16,7 @@ import sqlite3
 import os
 import csv
 import shutil
+import threading
 import traceback
 import importlib.metadata
 from datetime import datetime, timedelta
@@ -39,6 +40,12 @@ try:
 except Exception:
     VIBRATION_DISPONIBLE = False
 
+try:
+    from plyer import filechooser
+    FILECHOOSER_DISPONIBLE = True
+except Exception:
+    FILECHOOSER_DISPONIBLE = False
+
 
 def vibrer(duree=0.15):
     if not VIBRATION_DISPONIBLE:
@@ -60,12 +67,15 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.carousel import Carousel
+from kivy.uix.image import Image
+from kivy.uix.filechooser import FileChooserIconView
+from kivy.utils import platform
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.graphics import Color, Rectangle, Line
 from kivy.metrics import dp
 
-Window.softinput_mode = "pan"
+Window.softinput_mode = "resize"
 
 # ---------- Couleurs ----------
 BLEU_NUIT = (10/255, 61/255, 98/255, 1)
@@ -134,6 +144,63 @@ def obtenir_dossier_export():
     os.makedirs(dossier, exist_ok=True)
     return dossier
 
+# ========= CONFIGURATION ENTREPRISE (nom + logo personnalises) =========
+def obtenir_config_entreprise():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT nom_entreprise, chemin_logo, service FROM config_entreprise WHERE id=1")
+        ligne = c.fetchone()
+    if ligne:
+        return {"nom": ligne[0] or "", "logo": ligne[1] or "", "service": ligne[2] or ""}
+    return {"nom": "", "logo": "", "service": ""}
+
+def definir_config_entreprise(nom, chemin_logo, service=""):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM config_entreprise WHERE id=1")
+        if c.fetchone():
+            c.execute("UPDATE config_entreprise SET nom_entreprise=?, chemin_logo=?, service=? WHERE id=1", (nom, chemin_logo, service))
+        else:
+            c.execute("INSERT INTO config_entreprise (id, nom_entreprise, chemin_logo, service) VALUES (1,?,?,?)", (nom, chemin_logo, service))
+
+def _lire_bytes_fichier_ou_uri(chemin):
+    """Lit un fichier local classique, ou une URI content:// renvoyee par le
+    selecteur natif Android (necessite alors de passer par le ContentResolver)."""
+    try:
+        with open(chemin, "rb") as f:
+            return f.read()
+    except Exception:
+        pass
+    from jnius import autoclass
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Uri = autoclass("android.net.Uri")
+    ByteArrayOutputStream = autoclass("java.io.ByteArrayOutputStream")
+    activite = PythonActivity.mActivity
+    resolveur = activite.getContentResolver()
+    uri = Uri.parse(chemin)
+    flux = resolveur.openInputStream(uri)
+    sortie = ByteArrayOutputStream()
+    tampon = bytearray(4096)
+    while True:
+        lu = flux.read(tampon)
+        if lu == -1:
+            break
+        sortie.write(tampon, 0, lu)
+    flux.close()
+    return bytes(sortie.toByteArray())
+
+def enregistrer_logo_entreprise(chemin_source):
+    """Copie le logo choisi par l'utilisateur dans le stockage propre a
+    l'app et renvoie le chemin local (stable, reutilisable ensuite)."""
+    donnees = _lire_bytes_fichier_ou_uri(chemin_source)
+    extension = os.path.splitext(chemin_source.split("?")[0])[1].lower()
+    if extension not in (".png", ".jpg", ".jpeg"):
+        extension = ".png"
+    chemin_local = os.path.join(obtenir_dossier_export(), f"logo_entreprise{extension}")
+    with open(chemin_local, "wb") as f:
+        f.write(donnees)
+    return chemin_local
+
 def obtenir_poste_actuel():
     heure = datetime.now().hour
     if 6 <= heure < 14: return "Jour"
@@ -174,6 +241,11 @@ def calculer_plage_date(cle):
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
+        c.execute("CREATE TABLE IF NOT EXISTS config_entreprise (id INTEGER PRIMARY KEY, nom_entreprise TEXT, chemin_logo TEXT, service TEXT)")
+        c.execute("PRAGMA table_info(config_entreprise)")
+        cols_config = [l[1] for l in c.fetchall()]
+        if "service" not in cols_config:
+            c.execute("ALTER TABLE config_entreprise ADD COLUMN service TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS defauts (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS equipements (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS defauts_conditionnement (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL)")
@@ -382,12 +454,20 @@ class FondCouleur(BoxLayout):
     def _maj_rect(self,*a): self.rect.size=self.size; self.rect.pos=self.pos
 
 def entete(titre):
-    barre=FondCouleur(BLEU_FONCE, orientation="vertical", size_hint=(1,None), height=dp(64), padding=(dp(16),dp(8)))
-    lbl_marque=Label(text="[b]délice[/b]", markup=True, font_size=dp(20), color=BLANC, size_hint=(1,None), height=dp(26), halign="left")
+    config = obtenir_config_entreprise()
+    nom_affiche = config["nom"].strip() if config["nom"].strip() else "délice"
+    if config["service"].strip():
+        titre = f"{config['service'].strip()} — {titre}"
+    barre=FondCouleur(BLEU_FONCE, orientation="vertical", size_hint=(1,None), height=dp(84), padding=(dp(16),dp(8)))
+    ligne_marque=BoxLayout(orientation="horizontal", size_hint=(1,None), height=dp(44), spacing=dp(8))
+    lbl_marque=Label(text=f"[b]{nom_affiche}[/b]", markup=True, font_size=dp(20), color=BLANC, size_hint=(1,1), halign="left", valign="middle")
     lbl_marque.bind(size=lambda *a: setattr(lbl_marque,"text_size",lbl_marque.size))
+    ligne_marque.add_widget(lbl_marque)
+    if config["logo"] and os.path.exists(config["logo"]):
+        ligne_marque.add_widget(Image(source=config["logo"], size_hint=(None,1), width=dp(44)))
     lbl_titre=Label(text=titre, font_size=dp(13), color=(0.85,0.92,1,1), size_hint=(1,None), height=dp(20), halign="left")
     lbl_titre.bind(size=lambda *a: setattr(lbl_titre,"text_size",lbl_titre.size))
-    barre.add_widget(lbl_marque); barre.add_widget(lbl_titre); return barre
+    barre.add_widget(ligne_marque); barre.add_widget(lbl_titre); return barre
 
 def afficher_toast(message, couleur_fond=VERT_RESOLU, duree=1.8):
     contenu=FondCouleur(couleur_fond, orientation="vertical", padding=dp(16))
@@ -620,6 +700,105 @@ class SectionGeree(BoxLayout):
     def supprimer(self,*a):
         if self.selection_id is not None: self.delete_func(self.selection_id); self.recharger()
 
+class EcranEntreprise(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._chemin_logo_en_attente = None
+        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Parametres entreprise"))
+        corps=BoxLayout(orientation="vertical", padding=dp(24), spacing=dp(12))
+        corps.add_widget(Label(text="Nom de l'entreprise", font_size=dp(13), color=GRIS_TEXTE, size_hint=(1,None), height=dp(22), halign="left"))
+        self.champ_nom=TextInput(hint_text="Ex: Delice", multiline=False, size_hint=(1,None), height=dp(44))
+        corps.add_widget(self.champ_nom)
+        corps.add_widget(Label(text="Service / Departement", font_size=dp(13), color=GRIS_TEXTE, size_hint=(1,None), height=dp(22), halign="left"))
+        self.champ_service=TextInput(hint_text="Ex: Service Mecanique, Service Electrique...", multiline=False, size_hint=(1,None), height=dp(44))
+        corps.add_widget(self.champ_service)
+        corps.add_widget(Label(text="Logo (optionnel)", font_size=dp(13), color=GRIS_TEXTE, size_hint=(1,None), height=dp(22), halign="left"))
+        self.apercu_logo=Image(size_hint=(1,None), height=dp(110))
+        corps.add_widget(self.apercu_logo)
+        corps.add_widget(bouton("Choisir un logo", self.choisir_logo, couleur_fond=(0.90,0.93,0.97,1), couleur_texte=BLEU_NUIT))
+        self.lbl_message=Label(text="", font_size=dp(12), color=(0.13,0.55,0.13,1), size_hint=(1,None), height=dp(22))
+        corps.add_widget(self.lbl_message)
+        corps.add_widget(bouton("Enregistrer", self.enregistrer, couleur_fond=BLEU_FONCE))
+        corps.add_widget(bouton("Retour", self.retour, couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
+        corps.add_widget(BoxLayout())
+        racine.add_widget(corps); self.add_widget(racine)
+
+    def on_pre_enter(self):
+        config=obtenir_config_entreprise()
+        self.champ_nom.text=config["nom"]
+        self.champ_service.text=config["service"]
+        self._chemin_logo_en_attente=None
+        if config["logo"] and os.path.exists(config["logo"]):
+            self.apercu_logo.source=config["logo"]; self.apercu_logo.reload()
+
+    def choisir_logo(self, *a):
+        if platform == "android" and FILECHOOSER_DISPONIBLE:
+            try:
+                filechooser.open_file(on_selection=self._logo_selectionne, filters=[["Images","*.png","*.jpg","*.jpeg"]])
+                return
+            except Exception as e:
+                self.lbl_message.color=(0.75,0.15,0.1,1); self.lbl_message.text=f"Selecteur natif indisponible ({e}), mode alternatif."
+        self._popup_selecteur_fichiers()
+
+    def _popup_selecteur_fichiers(self):
+        """Repli : navigateur de fichiers integre a Kivy, utile sur Pydroid/PC
+        ou quand le selecteur natif Android n'est pas disponible."""
+        dossier_depart = obtenir_dossier_export()
+        for candidat in ("/storage/emulated/0/Pictures", "/storage/emulated/0/DCIM", "/storage/emulated/0/Download", "/storage/emulated/0"):
+            if os.path.isdir(candidat):
+                dossier_depart = candidat
+                break
+        contenu = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        chooser = FileChooserIconView(path=dossier_depart, filters=["*.png","*.jpg","*.jpeg","*.PNG","*.JPG","*.JPEG"])
+        contenu.add_widget(chooser)
+        popup = Popup(title="Choisir un logo", content=contenu, size_hint=(0.95, 0.9))
+        btns = BoxLayout(size_hint=(1,None), height=dp(46), spacing=dp(8))
+        def choisir(*a):
+            if chooser.selection:
+                popup.dismiss(); self._logo_selectionne([chooser.selection[0]])
+            else:
+                self.lbl_message.color=(0.75,0.15,0.1,1); self.lbl_message.text="Aucun fichier selectionne."
+        btns.add_widget(bouton("Annuler", lambda i: popup.dismiss(), couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
+        btns.add_widget(bouton("Choisir", choisir, couleur_fond=BLEU_FONCE))
+        contenu.add_widget(btns)
+        popup.open()
+
+    def _logo_selectionne(self, selection):
+        if not selection:
+            return
+        chemin_choisi=selection[0]
+        def travail():
+            try:
+                chemin_local=enregistrer_logo_entreprise(chemin_choisi)
+                Clock.schedule_once(lambda dt: self._logo_pret(chemin_local), 0)
+            except Exception as e:
+                Clock.schedule_once(lambda dt, err=str(e): self._logo_erreur(err), 0)
+        threading.Thread(target=travail, daemon=True).start()
+
+    def _logo_pret(self, chemin_local):
+        self._chemin_logo_en_attente=chemin_local
+        self.apercu_logo.source=chemin_local; self.apercu_logo.reload()
+        self.lbl_message.color=(0.13,0.55,0.13,1); self.lbl_message.text="Logo pret. N'oubliez pas d'Enregistrer."
+
+    def _logo_erreur(self, message):
+        self.lbl_message.color=(0.75,0.15,0.1,1); self.lbl_message.text=f"Erreur logo: {message}"
+
+    def enregistrer(self, *a):
+        nom=self.champ_nom.text.strip()
+        service=self.champ_service.text.strip()
+        if not nom:
+            self.lbl_message.color=(0.75,0.15,0.1,1); self.lbl_message.text="Veuillez saisir un nom d'entreprise."; return
+        config_actuelle=obtenir_config_entreprise()
+        chemin_logo=self._chemin_logo_en_attente or config_actuelle["logo"]
+        definir_config_entreprise(nom, chemin_logo, service)
+        self.lbl_message.color=(0.13,0.55,0.13,1); self.lbl_message.text="Enregistre ! Redemarrez l'app pour voir le nom partout."
+        vibrer()
+        Clock.schedule_once(lambda dt: self.retour(), 1.1)
+
+    def retour(self, *a):
+        self.manager.transition=SlideTransition(direction="right")
+        self.manager.current="login"
+
 class EcranLogin(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -634,9 +813,12 @@ class EcranLogin(Screen):
         lb=BoxLayout(size_hint=(1,None), height=dp(46), spacing=dp(10))
         lb.add_widget(bouton("OK", self.connecter)); lb.add_widget(bouton("Annuler", self.effacer, couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
         corps.add_widget(lb); corps.add_widget(BoxLayout())
+        corps.add_widget(bouton("Entreprise (nom / logo)", self.ouvrir_entreprise, couleur_fond=(0.90,0.93,0.97,1), couleur_texte=BLEU_NUIT))
         lr=Label(text=f"Réalisé par {NOM_REALISATEUR} - V2", font_size=dp(11), color=(0.6,0.66,0.72,1), size_hint=(1,None), height=dp(22), halign="center")
         lr.bind(size=lambda *a: setattr(lr,"text_size",lr.size)); corps.add_widget(lr)
         racine.add_widget(corps); self.add_widget(racine)
+    def ouvrir_entreprise(self,*a):
+        self.manager.transition=SlideTransition(direction="left"); self.manager.current="entreprise"
     def connecter(self,*a):
         if not self.champ_login.text.strip() or not self.champ_pass.text.strip():
             self.lbl_erreur.text="Veuillez saisir login et mot de passe."; return
@@ -787,7 +969,7 @@ class EcranHistorique(Screen):
     def imprimer(self,*a):
         sous_titre=f"Historique - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
-        lignes=self._lignes_completes_filtrees(); chemin=exporter_pdf("Historique Intervention - Delice", sous_titre, self.COLONNES, lignes, "historique_intervention.pdf")
+        lignes=self._lignes_completes_filtrees(); _cfg=obtenir_config_entreprise(); nom_ent=_cfg["nom"].strip() or "Delice"; _svc=f" ({_cfg['service'].strip()})" if _cfg["service"].strip() else ""; chemin=exporter_pdf(f"Historique Intervention - {nom_ent}{_svc}", sous_titre, self.COLONNES, lignes, "historique_intervention.pdf")
         afficher_popup_export_reussi("PDF", chemin)
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
 
@@ -867,7 +1049,7 @@ class EcranRapport(Screen):
     def imprimer(self,*a):
         sous=f"Rapport - {self.lbl_kpi.text}"
         if not FPDF_DISPONIBLE: afficher_popup_erreur_fpdf(); return
-        chemin=exporter_pdf("Rapport - Delice", sous, self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_intervention.pdf")
+        _cfg=obtenir_config_entreprise(); nom_ent=_cfg["nom"].strip() or "Delice"; _svc=f" ({_cfg['service'].strip()})" if _cfg["service"].strip() else ""; chemin=exporter_pdf(f"Rapport - {nom_ent}{_svc}", sous, self.COLONNES, getattr(self,"dernieres_lignes",[]), "rapport_intervention.pdf")
         afficher_popup_export_reussi("PDF", chemin)
     def retour(self,*a): self.manager.transition=SlideTransition(direction="right"); self.manager.current="objectifs"
 
@@ -1009,14 +1191,15 @@ class EcranFiche(Screen):
 class GestionMaintenanceApp(App):
     def build(self):
         basculer_mode_sombre(obtenir_poste_actuel()=="Nuit"); init_db()
-        self.sm=ScreenManager(); self.sm.add_widget(EcranLogin(name="login")); self.sm.add_widget(EcranObjectifs(name="objectifs"))
+        self.sm=ScreenManager(); self.sm.add_widget(EcranEntreprise(name="entreprise")); self.sm.add_widget(EcranLogin(name="login")); self.sm.add_widget(EcranObjectifs(name="objectifs"))
         self.sm.add_widget(EcranDonneesUtiles(name="donnees_utiles")); self.sm.add_widget(EcranHistorique(name="historique"))
         self.sm.add_widget(EcranRapport(name="rapport")); self.sm.add_widget(EcranFiche(name="fiche"))
+        self.sm.current = "login" if obtenir_config_entreprise()["nom"].strip() else "entreprise"
         Window.bind(on_keyboard=self.gerer_bouton_retour); return self.sm
     def gerer_bouton_retour(self,window,key,*a):
         if key==27:
             cur=self.sm.current
-            if cur=="login": return False
+            if cur in ("login","entreprise"): return False
             if cur=="objectifs": self.sm.transition=SlideTransition(direction="right"); self.sm.current="login"; return True
             self.sm.transition=SlideTransition(direction="right"); self.sm.current="objectifs"; return True
         return False
