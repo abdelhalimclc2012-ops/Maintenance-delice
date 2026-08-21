@@ -1,0 +1,42 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Compiler l'APK avec l'image Docker officielle Kivy (avec réessais automatiques)
+        run: |
+          set +e
+          for i in 1 2 3 4 5 6; do
+            echo "=== Tentative $i/6 ==="
+            yes | docker run --rm -i \
+              -e PIP_NO_BINARY=fonttools \
+              --volume "${{ github.workspace }}":/home/user/hostcwd \
+              kivy/buildozer \
+              android debug
+            code=$?
+            if [ $code -eq 0 ]; then
+              echo "Build réussi à la tentative $i"
+              exit 0
+            fi
+            echo "Échec tentative $i (code $code)."
+            echo "Nettoyage du cache .buildozer (peut être corrompu par l'echec) avant nouvelle tentative dans 60s..."
+            sudo rm -rf "${{ github.workspace }}/.buildozer"
+            sleep 60
+          done
+          echo "Échec après 6 tentatives"
+          exit 1
+
+      - name: Publier l'APK comme artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-delice-apk
+          path: bin/*.apk
