@@ -456,8 +456,7 @@ class FondCouleur(BoxLayout):
 def entete(titre):
     config = obtenir_config_entreprise()
     nom_affiche = config["nom"].strip() if config["nom"].strip() else "délice"
-    if config["service"].strip():
-        titre = f"{config['service'].strip()} — {titre}"
+    titre_affiche = f"{config['service'].strip()} — {titre}" if config["service"].strip() else titre
     barre=FondCouleur(BLEU_FONCE, orientation="vertical", size_hint=(1,None), height=dp(84), padding=(dp(16),dp(8)))
     ligne_marque=BoxLayout(orientation="horizontal", size_hint=(1,None), height=dp(44), spacing=dp(8))
     lbl_marque=Label(text=f"[b]{nom_affiche}[/b]", markup=True, font_size=dp(20), color=BLANC, size_hint=(1,1), halign="left", valign="middle")
@@ -465,9 +464,29 @@ def entete(titre):
     ligne_marque.add_widget(lbl_marque)
     if config["logo"] and os.path.exists(config["logo"]):
         ligne_marque.add_widget(Image(source=config["logo"], size_hint=(None,1), width=dp(44)))
-    lbl_titre=Label(text=titre, font_size=dp(13), color=(0.85,0.92,1,1), size_hint=(1,None), height=dp(20), halign="left")
+    lbl_titre=Label(text=titre_affiche, font_size=dp(13), color=(0.85,0.92,1,1), size_hint=(1,None), height=dp(20), halign="left")
     lbl_titre.bind(size=lambda *a: setattr(lbl_titre,"text_size",lbl_titre.size))
-    barre.add_widget(ligne_marque); barre.add_widget(lbl_titre); return barre
+    barre.add_widget(ligne_marque); barre.add_widget(lbl_titre)
+    # References conservees pour permettre un rafraichissement sans tout reconstruire
+    barre.lbl_marque=lbl_marque; barre.ligne_marque=ligne_marque; barre.lbl_titre=lbl_titre; barre.titre_base=titre
+    return barre
+
+def rafraichir_entete(barre):
+    """Remet a jour le nom/service/logo d'un en-tete deja construit,
+    sans recreer tout l'ecran. A appeler dans on_pre_enter de chaque
+    ecran pour que les changements faits sur EcranEntreprise soient
+    visibles immediatement, sans redemarrer l'app."""
+    if barre is None:
+        return
+    config = obtenir_config_entreprise()
+    nom_affiche = config["nom"].strip() if config["nom"].strip() else "délice"
+    barre.lbl_marque.text = f"[b]{nom_affiche}[/b]"
+    barre.lbl_titre.text = f"{config['service'].strip()} — {barre.titre_base}" if config["service"].strip() else barre.titre_base
+    for w in list(barre.ligne_marque.children):
+        if w is not barre.lbl_marque:
+            barre.ligne_marque.remove_widget(w)
+    if config["logo"] and os.path.exists(config["logo"]):
+        barre.ligne_marque.add_widget(Image(source=config["logo"], size_hint=(None,1), width=dp(44)))
 
 def afficher_toast(message, couleur_fond=VERT_RESOLU, duree=1.8):
     contenu=FondCouleur(couleur_fond, orientation="vertical", padding=dp(16))
@@ -704,7 +723,7 @@ class EcranEntreprise(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._chemin_logo_en_attente = None
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Parametres entreprise"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Parametres entreprise"); racine.add_widget(self._barre_entete)
         corps=BoxLayout(orientation="vertical", padding=dp(24), spacing=dp(12))
         corps.add_widget(Label(text="Nom de l'entreprise", font_size=dp(13), color=GRIS_TEXTE, size_hint=(1,None), height=dp(22), halign="left"))
         self.champ_nom=TextInput(hint_text="Ex: Delice", multiline=False, size_hint=(1,None), height=dp(44))
@@ -724,6 +743,7 @@ class EcranEntreprise(Screen):
         racine.add_widget(corps); self.add_widget(racine)
 
     def on_pre_enter(self):
+        rafraichir_entete(self._barre_entete)
         config=obtenir_config_entreprise()
         self.champ_nom.text=config["nom"]
         self.champ_service.text=config["service"]
@@ -791,7 +811,7 @@ class EcranEntreprise(Screen):
         config_actuelle=obtenir_config_entreprise()
         chemin_logo=self._chemin_logo_en_attente or config_actuelle["logo"]
         definir_config_entreprise(nom, chemin_logo, service)
-        self.lbl_message.color=(0.13,0.55,0.13,1); self.lbl_message.text="Enregistre ! Redemarrez l'app pour voir le nom partout."
+        self.lbl_message.color=(0.13,0.55,0.13,1); self.lbl_message.text="Enregistre !"
         vibrer()
         Clock.schedule_once(lambda dt: self.retour(), 1.1)
 
@@ -802,7 +822,7 @@ class EcranEntreprise(Screen):
 class EcranLogin(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Gestion Maintenance — Département Technique"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Gestion Maintenance — Département Technique"); racine.add_widget(self._barre_entete)
         corps=BoxLayout(orientation="vertical", padding=dp(24), spacing=dp(12))
         corps.add_widget(Label(text="Bienvenue\nGestion Maintenance", font_size=dp(16), color=BLEU_NUIT, bold=True, size_hint=(1,None), height=dp(60), halign="center"))
         corps.add_widget(Label(text="Saisissez votre nom et mot de passe", font_size=dp(12), color=GRIS_TEXTE, size_hint=(1,None), height=dp(24)))
@@ -817,6 +837,8 @@ class EcranLogin(Screen):
         lr=Label(text=f"Réalisé par {NOM_REALISATEUR} - V2", font_size=dp(11), color=(0.6,0.66,0.72,1), size_hint=(1,None), height=dp(22), halign="center")
         lr.bind(size=lambda *a: setattr(lr,"text_size",lr.size)); corps.add_widget(lr)
         racine.add_widget(corps); self.add_widget(racine)
+    def on_pre_enter(self):
+        rafraichir_entete(self._barre_entete)
     def ouvrir_entreprise(self,*a):
         self.manager.transition=SlideTransition(direction="left"); self.manager.current="entreprise"
     def connecter(self,*a):
@@ -828,7 +850,7 @@ class EcranLogin(Screen):
 class EcranObjectifs(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Menu principal"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Menu principal"); racine.add_widget(self._barre_entete)
         corps=BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
         corps.add_widget(Label(text="Choisir votre objectif", font_size=dp(14), bold=True, color=BLEU_FONCE, size_hint=(1,None), height=dp(30)))
         self.carrousel=Carousel(direction="right", loop=True, size_hint=(1,1))
@@ -844,6 +866,7 @@ class EcranObjectifs(Screen):
     def _libelle_mode_sombre(self): return "Mode clair" if est_mode_sombre() else "Mode sombre"
     def basculer_theme(self,*a): basculer_mode_sombre(not est_mode_sombre()); self.btn_mode_sombre.text=self._libelle_mode_sombre()
     def on_enter(self):
+        rafraichir_entete(self._barre_entete)
         self.btn_mode_sombre.text=self._libelle_mode_sombre()
         self._evt=Clock.schedule_interval(lambda dt: self.carrousel.load_next(mode="loop"), 3.5)
     def on_leave(self):
@@ -854,7 +877,7 @@ class EcranObjectifs(Screen):
 class EcranDonneesUtiles(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Données Utiles"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Données Utiles"); racine.add_widget(self._barre_entete)
         scroll=ScrollView(); corps=GridLayout(cols=1, padding=dp(16), spacing=dp(20), size_hint=(1,None)); corps.bind(minimum_height=corps.setter("height"))
         corps.add_widget(SectionGeree("Liste Équipement", get_equipements, ajouter_equipement, supprimer_equipement))
         corps.add_widget(SectionGeree("Liste Intervenant", get_intervenants, ajouter_intervenant, supprimer_intervenant))
@@ -863,6 +886,7 @@ class EcranDonneesUtiles(Screen):
         corps.add_widget(bouton("Menu principal", self.retour, couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
         scroll.add_widget(corps); racine.add_widget(scroll); self.add_widget(racine)
     def on_pre_enter(self):
+        rafraichir_entete(self._barre_entete)
         for e in self.walk():
             if isinstance(e, SectionGeree): e.recharger()
     def sauvegarder_db(self,*a):
@@ -878,7 +902,7 @@ class EcranHistorique(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.page_courante=0; self.total_lignes=0; self._filtres_actuels={}; self._debounce=None
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Historique Intervention"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Historique Intervention"); racine.add_widget(self._barre_entete)
         barre_haute=BoxLayout(size_hint=(1,None), height=dp(46), padding=(dp(10),0), spacing=dp(8))
         barre_haute.add_widget(bouton("Menu", self.retour, couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
         barre_haute.add_widget(bouton("Excel", self.exporter_excel, couleur_fond=(0.1,0.5,0.2,1), couleur_texte=BLANC))
@@ -919,6 +943,7 @@ class EcranHistorique(Screen):
         barre_pag.add_widget(self.btn_page_precedente); barre_pag.add_widget(self.lbl_pagination); barre_pag.add_widget(self.btn_page_suivante)
         racine.add_widget(barre_pag); self.add_widget(racine)
     def on_pre_enter(self):
+        rafraichir_entete(self._barre_entete)
         noms=[n for _,n in get_equipements()]; self.spinner_filtre_equipement.values=["Tous les équipements"]+noms
         if self.spinner_filtre_equipement.text not in self.spinner_filtre_equipement.values: self.spinner_filtre_equipement.text="Tous les équipements"
         self.page_courante=0; self.remplir_tableau()
@@ -977,7 +1002,7 @@ class EcranRapport(Screen):
     COLONNES=["N° OT","Date","Poste","Équipement","Type","Anomalie","Action","Durée","Interv. 1","Interv. 2","Remarques","Statut"]
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Rapport Intervention"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Rapport Intervention"); racine.add_widget(self._barre_entete)
         barre_haute=BoxLayout(size_hint=(1,None), height=dp(46), padding=(dp(10),0), spacing=dp(8))
         barre_haute.add_widget(bouton("Menu", self.retour, couleur_fond=(0.85,0.88,0.9,1), couleur_texte=GRIS_TEXTE))
         barre_haute.add_widget(bouton("Excel", self.exporter_excel, couleur_fond=(0.1,0.5,0.2,1), couleur_texte=BLANC))
@@ -1009,7 +1034,7 @@ class EcranRapport(Screen):
         self.scroll_v=ScrollView(size_hint=(1,1))
         self.conteneur_cartes=GridLayout(cols=1, spacing=dp(10), padding=dp(10), size_hint=(1,None)); self.conteneur_cartes.bind(minimum_height=self.conteneur_cartes.setter("height"))
         self.scroll_v.add_widget(self.conteneur_cartes); racine.add_widget(self.scroll_v); self.add_widget(racine)
-    def on_pre_enter(self): self.generer()
+    def on_pre_enter(self): rafraichir_entete(self._barre_entete); self.generer()
     def ouvrir_popup_top5(self,*a):
         contenu=FondCouleur(BLANC, orientation="vertical", padding=dp(14), spacing=dp(10))
         scroll=ScrollView(size_hint=(1,1)); corps=BoxLayout(orientation="vertical", size_hint=(1,None), spacing=dp(16), padding=(0,dp(4))); corps.bind(minimum_height=corps.setter("height"))
@@ -1056,7 +1081,7 @@ class EcranRapport(Screen):
 class EcranFiche(Screen):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        racine=BoxLayout(orientation="vertical"); racine.add_widget(entete("Fiche Intervention"))
+        racine=BoxLayout(orientation="vertical"); self._barre_entete=entete("Fiche Intervention"); racine.add_widget(self._barre_entete)
         scroll=ScrollView(); corps=GridLayout(cols=1, padding=dp(16), spacing=dp(16), size_hint=(1,None)); corps.bind(minimum_height=corps.setter("height"))
         def label(t):
             l=Label(text=t, font_size=dp(12), bold=True, color=BLEU_NUIT, size_hint=(1,None), height=dp(20), halign="left")
@@ -1113,7 +1138,7 @@ class EcranFiche(Screen):
         else:
             self.btn_statut_a_suivre.background_color=ORANGE_A_SUIVRE; self.btn_statut_a_suivre.color=BLANC
             self.btn_statut_resolue.background_color=(0.85,0.88,0.9,1); self.btn_statut_resolue.color=GRIS_TEXTE
-    def on_pre_enter(self): self.spinner_poste.text=obtenir_poste_actuel(); self.recharger_equipements(); self.recharger_intervenants()
+    def on_pre_enter(self): rafraichir_entete(self._barre_entete); self.spinner_poste.text=obtenir_poste_actuel(); self.recharger_equipements(); self.recharger_intervenants()
     def ouvrir_liste_defauts(self,*a):
         c=BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10))
         c.add_widget(Label(text="Choisir un defaut", font_size=dp(15), bold=True, color=BLEU_NUIT, size_hint=(1,None), height=dp(28)))
